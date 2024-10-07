@@ -16,6 +16,11 @@ type Location struct {
 	Lon float64
 }
 
+type poolItem struct {
+	responseCh chan time.Time
+	location   Location
+}
+
 func main() {
 	var addr string
 	if os.Args[1] == "-listen.addr" {
@@ -26,13 +31,14 @@ func main() {
 		log.Fatal("You must specify an address to listen on.")
 	}
 
+	poolCh := make(chan poolItem)
+	workerPool(poolCh, 2)
 	http.ListenAndServe(addr, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		srCh := make(chan time.Time)
 		if request.Method == "POST" {
 			if request.URL.Path == "/sunrise/at" {
 				loc := getLocation(request)
-				go getSunriseFromFirstURL(srCh, loc)
-				go getSunriseFromSecondURL(srCh, loc)
+				poolCh <- poolItem{responseCh: srCh, location: loc}
 
 				sunrise := <-srCh
 
@@ -44,7 +50,34 @@ func main() {
 	}))
 }
 
-func getSunriseFromFirstURL(ch chan time.Time, location Location) {
+func workerPool(ch chan poolItem, size int) {
+	for i := 0; i < size; i++ {
+		go poolForFirstURL(ch)
+		go poolForSecondURL(ch)
+	}
+}
+
+func poolForFirstURL(ch chan poolItem) {
+	for {
+		item := <-ch
+		tm, err := getSunriseFromFirstURL(item.location)
+		if err == nil {
+			item.responseCh <- tm
+		}
+	}
+}
+
+func poolForSecondURL(ch chan poolItem) {
+	for {
+		item := <-ch
+		tm, err := getSunriseFromSecondURL(item.location)
+		if err == nil {
+			item.responseCh <- tm
+		}
+	}
+}
+
+func getSunriseFromFirstURL(location Location) (time.Time, error) {
 	type SunriseIOTime struct {
 		Time time.Time
 	}
@@ -55,12 +88,14 @@ func getSunriseFromFirstURL(ch chan time.Time, location Location) {
 		b, _ := io.ReadAll(r.Body)
 		err = json.Unmarshal(b, &sunriseTime)
 		if err == nil {
-			ch <- sunriseTime.Time
+			return sunriseTime.Time, nil
 		}
 	}
+
+	return time.Time{}, err
 }
 
-func getSunriseFromSecondURL(ch chan time.Time, location Location) {
+func getSunriseFromSecondURL(location Location) (time.Time, error) {
 	type SunriseTime struct {
 		Time time.Time
 	}
@@ -68,16 +103,17 @@ func getSunriseFromSecondURL(ch chan time.Time, location Location) {
 		"&lon=" + strconv.FormatFloat(location.Lon, 'f', 10, 64)))
 	r, err := http.Post("http://sun.ri.se/at", "application/x-www-form-urlencoded", body)
 	if err != nil {
-		return
+		return time.Time{}, err
 	}
 	var sunriseTime SunriseTime
 	b, _ := io.ReadAll(r.Body)
 	err = json.Unmarshal(b, &sunriseTime)
 	if err != nil {
 		log.Println("Error parsing sunrise time:", err)
-		return
+		return time.Time{}, err
 	}
-	ch <- sunriseTime.Time
+
+	return sunriseTime.Time, nil
 }
 
 func getLocation(request *http.Request) Location {
