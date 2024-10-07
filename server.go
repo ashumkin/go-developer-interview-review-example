@@ -28,13 +28,19 @@ func main() {
 
 	http.ListenAndServe(addr, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		srCh := make(chan time.Time)
-		loc := getLocation(request)
-		go getSunriseFromFirstURL(srCh, loc)
-		go getSunriseFromSecondURL(srCh, loc)
+		if request.Method == "POST" {
+			if request.URL.Path == "/sunrise/at" {
+				loc := getLocation(request)
+				go getSunriseFromFirstURL(srCh, loc)
+				go getSunriseFromSecondURL(srCh, loc)
 
-		sunrise := <-srCh
+				sunrise := <-srCh
 
-		writer.Write([]byte(sunrise.Format(time.RFC3339)))
+				writer.Write([]byte(sunrise.Format(time.RFC3339)))
+			}
+		} else {
+			writer.WriteHeader(http.StatusMethodNotAllowed)
+		}
 	}))
 }
 
